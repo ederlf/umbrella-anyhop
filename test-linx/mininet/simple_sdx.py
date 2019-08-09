@@ -32,8 +32,8 @@ class SDXTopo( Topo ):
         self.addLink(ld6, ld5, 2, 2)
  
         # Edge Core -> Area 2
-        eq_harbour = self.addSwitch('eq_harbour1')
-        interxion = self.addSwitch('interxion2')
+        eq_harbour = self.addSwitch('eq_har1')
+        interxion = self.addSwitch('inter2')
         dr = self.addSwitch('dr3')
         eq_pg = self.addSwitch('eq_pg7')
 
@@ -46,7 +46,7 @@ class SDXTopo( Topo ):
         # Ring -> Area 3
         th_west = self.addSwitch('th_west8')
         th_north = self.addSwitch('th_north9')
-        sovereign = self.addSwitch('sovereign11')
+        sovereign = self.addSwitch('sv11')
 
         self.addLink(sovereign, th_west, 1, 1)
         self.addLink(sovereign, th_north, 2, 1)
@@ -82,13 +82,29 @@ class SDXTopo( Topo ):
                             networks=["172.9.25.0/24", "172.9.96.0/24"],
                             asn=200)
 
-        # self.addParticipant(fabric=sovereign,
-        #                     name="c1",
-        #                     port=5,
-        #                     mac="00:00:00:00:00:03",
-        #                     ip="172.0.0.21/24",
-        #                     networks=["172.3.0.0/16", "172.4.0.0/16"],
-        #                     asn=300)
+        self.addParticipant(fabric=th_north,
+                            name="c1",
+                            port=5,
+                            mac="00:00:00:00:00:03",
+                            ip="172.0.0.21/24",
+                            networks=["172.3.0.0/16", "172.4.0.0/16"],
+                            asn=300)
+
+        self.addParticipant(fabric=th_west,
+                            name="d1",
+                            port=4,
+                            mac="00:00:00:00:00:04",
+                            ip="172.0.0.22/24",
+                            networks=["172.5.0.0/16", "172.8.0.0/16"],
+                            asn=400)
+
+        self.addParticipant(fabric=ld5,
+                            name="e1",
+                            port=3,
+                            mac="00:00:00:00:00:05",
+                            ip="172.0.0.23/24",
+                            networks=["172.15.0.0/16", "172.18.0.0/16"],
+                            asn=500)
 
     def addParticipant(self, fabric, name, port, mac, ip, networks, asn):
         # Adds the interface to connect the router to the Route server
