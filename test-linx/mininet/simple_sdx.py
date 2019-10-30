@@ -7,7 +7,7 @@ from mininet.log import setLogLevel
 from mininet.node import RemoteController, OVSSwitch
 from sdnip import BgpRouter, SdnipHost
 
-ROUTE_SERVER_IP = '172.0.255.254'
+ROUTE_SERVER_IP = '172.0.0.254'
 ROUTE_SERVER_ASN = 65000
 
 
@@ -60,7 +60,7 @@ class SDXTopo( Topo ):
 
 
         # Add node for central Route Server"
-        route_server = self.addHost('rs1', ip = '172.0.255.254/24', mac='08:00:27:89:3b:ff', inNamespace = False)
+        route_server = self.addHost('rs1', ip = '172.0.0.254/24', mac='08:00:27:89:3b:ff', inNamespace = False)
         self.addLink(dr, route_server, 3)
 
         
@@ -105,6 +105,14 @@ class SDXTopo( Topo ):
                             ip="172.0.0.23/24",
                             networks=["172.15.0.0/16", "172.18.0.0/16"],
                             asn=500)
+
+        self.addParticipant(fabric=dr,
+                            name="f1",
+                            port=4,
+                            mac="00:00:00:00:00:06",
+                            ip="172.0.0.24/24",
+                            networks=["172.25.0.0/16", "172.28.0.0/16"],
+                            asn=600)
 
     def addParticipant(self, fabric, name, port, mac, ip, networks, asn):
         # Adds the interface to connect the router to the Route server
