@@ -26,6 +26,7 @@ from collections import namedtuple
 import networkx as nx
 import json
 from struct import *
+import copy
 
 Port = namedtuple('Port', ['label', 'id', 'switch', 'mac', 'ip'])
 Datapath = namedtuple('Datapath', ['name', 'dpid', 'area', 'participants', 'ports'])
@@ -44,6 +45,7 @@ class UmbrellaLINX(app_manager.RyuApp):
             cfg.StrOpt('topo_file', default='', help = ('The specification of the IXP')),
         ])
 
+        self.dps = {}
         self.areas = {} # Dictionary of Graphs
         self.datapaths= {}
         self.dpid_name= {}
@@ -52,6 +54,7 @@ class UmbrellaLINX(app_manager.RyuApp):
         self.ports = []
         self.hops_area = {}
         self.borders = {}
+        self.backups = {}
         self._topo_from_json(CONF.topo_file);
         for a in self.areas:
             g = self.areas[a]
@@ -59,6 +62,20 @@ class UmbrellaLINX(app_manager.RyuApp):
             paths = nx.all_pairs_shortest_path(g)
             for p in paths:
                 self.paths[a][p[0]] = p[1]
+
+            self.backups[a] = {}
+            # for sw in g.nodes:
+            #     self.backups[a][sw] = {}
+            #     for t in [s for s in g.nodes if s != sw]:
+            #         backup = [x for x in nx.all_simple_paths(g, sw, t) if len(x) > 2]
+            #         if len(backup) > 1:
+            #             continue
+            #         self.backups[a][sw][t] = backup[0]
+            ng = copy.deepcopy(g)
+            ng.remove_edge("edge2", "edge4")
+            paths = nx.all_pairs_shortest_path(ng)
+            for p in paths:
+                self.backups[a][p[0]] = p[1]
 
     def _topo_from_json(self, conf):
         with open(conf) as json_data:
@@ -69,7 +86,8 @@ class UmbrellaLINX(app_manager.RyuApp):
                 if a not in self.areas:
                     self.areas[a] = nx.Graph()
                 self.areas[a].add_node(sw, area=a)
-            
+                self.areas[a].nodes[sw]["border"] = False
+
 
             dps = d["FabricSettings"]["dp_ids"]
             for dp in dps:
@@ -86,8 +104,8 @@ class UmbrellaLINX(app_manager.RyuApp):
                 border = False
                 if a1 == a2:
                     self.areas[a1].add_edge(n1, n2, ports=l)
-                    self.areas[a1].nodes[n1]["border"] = False
-                    self.areas[a2].nodes[n2]["border"] = False
+                    # self.areas[a1].nodes[n1]["border"] = False
+                    # self.areas[a2].nodes[n2]["border"] = False
                 else:
                     # Border key is composed by the src/dst areas
                     self.areas[a1].nodes[n1]["border"] = True
@@ -95,6 +113,9 @@ class UmbrellaLINX(app_manager.RyuApp):
                     self.borders[(a1, a2)] = Border(n1, l[n1], n2, l[n2])
                     self.borders[(a2, a1)] = Border(n2, l[n2], n1, l[n1])
                     border = True
+                    self.datapaths[n1].ports.append(( l[n1], border) )
+                    self.datapaths[n2].ports.append(( l[n2], border) )
+
                 self.datapaths[n1].ports.append(( l[n1], border) )
                 self.datapaths[n2].ports.append(( l[n2], border) )
 
@@ -112,12 +133,13 @@ class UmbrellaLINX(app_manager.RyuApp):
                     sw = self.datapaths[dp]
                     sw.participants[m] = port
 
-
-    # Nhop is the maximum hop position a datapath can be in the path 
-    def add_ingress_flows(self, datapath):
+    def add_ingress_flows(self, datapath, backup = False):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         insw = self.datapaths[self.dpid_name[datapath.id]]
+        name = self.dpid_name[datapath.id]
+        if name[:4] == "core":
+            return
 
         # Install flow to forward to ingress if does not match table 0
         match = parser.OFPMatch()
@@ -139,11 +161,21 @@ class UmbrellaLINX(app_manager.RyuApp):
                 outarea = out_sw.area
                 # Switch and Destination are in the same area
                 # Install flow that encodes the path to this switch
+                
+                priority = 1000
+
+                if backup:
+                    priority = 2000
+
                 if outarea == inarea:
-                    path = self.paths[inarea][insw.name][out_sw.name]
+                    if not backup:
+                        path = self.paths[inarea][insw.name][out_sw.name]
+                    else:
+                        path = self.backups[inarea][insw.name][out_sw.name]
                     mac = [0, 0]
-                    # Do not consider first hop
+                   
                     out_port = self.areas[inarea][insw.name][path[1]]['ports'][insw.name]
+
                     for i in range(2, len(path)):
                         cur = path[i-1]
                         nxt = path[i]
@@ -156,12 +188,13 @@ class UmbrellaLINX(app_manager.RyuApp):
                     mac_addr = ':'.join(map('{:02x}'.format, mac)).upper()
                     vid = datapath.ofproto_parser.OFPMatchField.make(
                             datapath.ofproto.OXM_OF_VLAN_VID, 0x1000 | 1)
+                    
                     actions = [parser.OFPActionSetField(eth_dst=mac_addr), parser.OFPActionPushVlan(),parser.OFPActionSetField(vid), parser.OFPActionOutput(out_port)]
                     inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)] 
                     match = parser.OFPMatch(eth_dst=p.mac)
-                    self.add_flow(datapath, 1000, inst, match, self.INGRESS_TABLE)
+                    self.add_flow(datapath, priority, inst, match, self.INGRESS_TABLE)
                     match = parser.OFPMatch(eth_type=0x806, arp_op=1, arp_tpa=p.ip)
-                    self.add_flow(datapath, 1000, inst, match, self.INGRESS_TABLE)
+                    self.add_flow(datapath, priority, inst, match, self.INGRESS_TABLE)
                 else:
                     # Different areas, encode area, label and path to the 
                     # border switch
@@ -199,10 +232,12 @@ class UmbrellaLINX(app_manager.RyuApp):
                     match = parser.OFPMatch(eth_type=0x806, arp_op=1, arp_tpa=p.ip)
                     self.add_flow(datapath, 1000, inst, match, self.INGRESS_TABLE)
 
+    # Nhop is the maximum hop position a datapath can be in the path 
     def add_hop_flows(self, datapath):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         insw = self.datapaths[self.dpid_name[datapath.id]]
+        name =  self.dpid_name[datapath.id]
         nhop = self.hops_area[insw.area]
         for i in range(1, nhop+1):
             # Install flow to verify hop
@@ -238,6 +273,7 @@ class UmbrellaLINX(app_manager.RyuApp):
                 else:
                     # Increase the HOP count
                     actions.append(parser.OFPActionSetField(vlan_vid= 0x1000 | (i+1)))
+                
                 actions += [parser.OFPActionOutput(port[0])]
                 inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
                 self.add_flow(datapath, 10000, inst, match,
@@ -255,6 +291,7 @@ class UmbrellaLINX(app_manager.RyuApp):
         
         # # Match the label, rewrite the MAC and send to ingress table 
         for port in self.ports:
+
             # TODO: Need to add private bit to the label. 
             # Perhaps work with bytes.
             al = str(hex( (0x1 << 12 | int(port.label))  ))
@@ -291,7 +328,28 @@ class UmbrellaLINX(app_manager.RyuApp):
         if self.is_border(datapath):
             self.add_label_flows(datapath)
         
-        # self.add_flow(datapath, 0, match, actions)
+        self.dps[self.dpid_name[datapath.id]] = datapath
+
+
+    @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
+    def port_status_handler(self, ev):
+        msg = ev.msg
+        dp = msg.datapath
+        ofp = dp.ofproto
+        if msg.reason == ofp.OFPPR_MODIFY:
+            reason = 'MODIFY'
+            if msg.desc.state == 1:
+                backup = True
+            else:
+                backup = False
+            for odp in self.dps:
+                odp = self.dps[odp]
+                if odp.id == dp.id:
+                    continue
+
+                self.add_ingress_flows(odp, backup)
+
+            self.logger.debug('OFPPortStatus received: reason=%sdesc=%s',reason, msg.desc)
 
     def add_flow(self, datapath, priority, inst,  match, table):
         ofproto = datapath.ofproto
@@ -299,3 +357,4 @@ class UmbrellaLINX(app_manager.RyuApp):
         mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
                                 table_id=table, match=match, instructions=inst)
         datapath.send_msg(mod)
+
